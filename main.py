@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
-matplotlib.use('Agg')   # change to 'Agg' if TkAgg gives error
+matplotlib.use('Agg')
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
@@ -120,29 +120,47 @@ print(f"Val samples    : {validation_generator.samples}\n")
 # ================================================================
 
 def build_model(num_classes, dropout_rate=0.5):
+    """
+    Anti-overfitting improvements added:
+      1. Dropout(0.1) after every Conv block       — drops random feature maps during training
+      2. Dropout(0.4) after Flatten                — was already here, kept
+      3. Dropout(0.3) after Dense(512)             — NEW: prevents dense layer memorizing
+      4. L2 kernel_regularizer on every Conv layer — penalizes large weights
+      5. L2 kernel_regularizer on Dense(512)       — same for classifier head
+    """
+    from tensorflow.keras.regularizers import l2
+
     model = Sequential([
 
-        # Block 1
+        # ── Block 1 ──────────────────────────────────────────
         Conv2D(32, (3, 3), activation='relu', padding='same',
+               kernel_regularizer=l2(1e-4),          # L2 regularization
                input_shape=(IMG_WIDTH, IMG_HEIGHT, 3)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
+        Dropout(0.1),                                 # drop 10% feature maps
 
-        # Block 2
-        Conv2D(64, (3, 3), activation='relu', padding='same'),
+        # ── Block 2 ──────────────────────────────────────────
+        Conv2D(64, (3, 3), activation='relu', padding='same',
+               kernel_regularizer=l2(1e-4)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
+        Dropout(0.2),                                 # drop 20% feature maps
 
-        # Block 3
-        Conv2D(128, (3, 3), activation='relu', padding='same'),
+        # ── Block 3 ──────────────────────────────────────────
+        Conv2D(128, (3, 3), activation='relu', padding='same',
+               kernel_regularizer=l2(1e-4)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
+        Dropout(0.3),                                 # drop 30% feature maps
 
-        # Classifier
+        # ── Classifier head ───────────────────────────────────
         Flatten(),
-        Dropout(dropout_rate),
-        Dense(512, activation='relu'),
-        Dense(num_classes, activation='softmax')
+        Dropout(0.4),                                 # original dropout kept
+        Dense(512, activation='relu',
+              kernel_regularizer=l2(1e-4)),           # L2 on dense layer
+        Dropout(0.3),                                 # NEW: dropout after Dense
+        Dense(num_classes, activation='softmax')      # no dropout on output layer
     ])
 
     model.compile(
