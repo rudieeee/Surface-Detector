@@ -1,7 +1,5 @@
 # ================================================================
 #  SURFACE DEFECT DETECTION USING CNN + GRAD-CAM
-#  VSCode Version — No Google Colab needed
-#  Run: python surface_defect_detection.py
 # ================================================================
 
 import os
@@ -28,7 +26,7 @@ from PIL import Image
 
 
 # ================================================================
-# SECTION 1 — PATHS  (no ZIP needed, folders already extracted)
+# SECTION 1 — PATHS  
 # ================================================================
 
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))   # same folder as this .py file
@@ -67,8 +65,8 @@ IMG_WIDTH    = 128
 IMG_HEIGHT   = 128
 BATCH_SIZE   = 32
 
-# The 3 epoch values to compare (answers teacher's question)
-EPOCH_VARIANTS = [100, 300, 500]
+# The 3 epoch values to compa5e 
+EPOCH_VARIANTS = [30, 70, 70]
 
 
 # ================================================================
@@ -138,25 +136,25 @@ def build_model(num_classes, dropout_rate=0.5):
                input_shape=(IMG_WIDTH, IMG_HEIGHT, 3)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
-        Dropout(0.1),                                 # drop 10% feature maps
+        #Dropout(0.1),                                 # drop 10% feature maps
 
         # ── Block 2 ──────────────────────────────────────────
         Conv2D(64, (3, 3), activation='relu', padding='same',
                kernel_regularizer=l2(1e-4)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
-        Dropout(0.2),                                 # drop 20% feature maps
+        #Dropout(0.2),                                 # drop 20% feature maps
 
         # ── Block 3 ──────────────────────────────────────────
         Conv2D(128, (3, 3), activation='relu', padding='same',
                kernel_regularizer=l2(1e-4)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
-        Dropout(0.3),                                 # drop 30% feature maps
+        #Dropout(0.3),                                 # drop 30% feature maps
 
         # ── Classifier head ───────────────────────────────────
         Flatten(),
-        Dropout(0.4),                                 # original dropout kept
+        #Dropout(0.4),                                 # original dropout kept
         Dense(512, activation='relu',
               kernel_regularizer=l2(1e-4)),           # L2 on dense layer
         Dropout(0.3),                                 # NEW: dropout after Dense
@@ -181,11 +179,11 @@ def get_callbacks():
 
 
 # ================================================================
-# SECTION 5 — TRAIN AT 3 EPOCH SETTINGS (100, 300, 500)
+# SECTION 5 — TRAIN AT 3 EPOCH SETTINGS (300, 50, 70)
 # ================================================================
 
 print("=" * 55)
-print("  TRAINING EXPERIMENT: 100 vs 300 vs 500 epochs")
+print("  TRAINING EXPERIMENT: 30 vs 50 vs 70 epochs")
 print("=" * 55)
 
 histories       = {}
