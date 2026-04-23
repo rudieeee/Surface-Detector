@@ -29,20 +29,18 @@ from PIL import Image
 # SECTION 1 — PATHS  
 # ================================================================
 
-BASE_DIR     = os.path.dirname(os.path.abspath(__file__))   # same folder as this .py file
+BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 TRAINING_DIR = os.path.join(BASE_DIR, 'data', 'train_metal')
 TESTING_DIR  = os.path.join(BASE_DIR, 'data', 'test_metal')
 OUTPUT_DIR   = os.path.join(BASE_DIR, 'outputs')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Quick sanity check
 print("=" * 55)
 print("  SURFACE DEFECT DETECTION — STARTUP CHECK")
 print("=" * 55)
 
 if not os.path.exists(TRAINING_DIR):
     print(f"ERROR: Training folder not found at:\n  {TRAINING_DIR}")
-    print("Make sure your data/ folder is set up correctly.")
     exit()
 
 if not os.path.exists(TESTING_DIR):
@@ -65,8 +63,8 @@ IMG_WIDTH    = 128
 IMG_HEIGHT   = 128
 BATCH_SIZE   = 32
 
-# The 3 epoch values to compa5e 
-EPOCH_VARIANTS = [30, 70, 70]
+# ── Single epoch budget (early-stopping will find the true optimum) ──
+EPOCH_VARIANTS = [300]
 
 
 # ================================================================
@@ -102,7 +100,7 @@ validation_generator = test_datagen.flow_from_directory(
     target_size = (IMG_WIDTH, IMG_HEIGHT),
     batch_size  = BATCH_SIZE,
     class_mode  = 'categorical',
-    shuffle     = False   # keep order for confusion matrix
+    shuffle     = False
 )
 
 NUM_CLASSES  = train_generator.num_classes
@@ -118,47 +116,33 @@ print(f"Val samples    : {validation_generator.samples}\n")
 # ================================================================
 
 def build_model(num_classes, dropout_rate=0.5):
-    """
-    Anti-overfitting improvements added:
-      1. Dropout(0.1) after every Conv block       — drops random feature maps during training
-      2. Dropout(0.4) after Flatten                — was already here, kept
-      3. Dropout(0.3) after Dense(512)             — NEW: prevents dense layer memorizing
-      4. L2 kernel_regularizer on every Conv layer — penalizes large weights
-      5. L2 kernel_regularizer on Dense(512)       — same for classifier head
-    """
     from tensorflow.keras.regularizers import l2
 
     model = Sequential([
-
-        # ── Block 1 ──────────────────────────────────────────
         Conv2D(32, (3, 3), activation='relu', padding='same',
-               kernel_regularizer=l2(1e-4),          # L2 regularization
+               kernel_regularizer=l2(1e-4),
                input_shape=(IMG_WIDTH, IMG_HEIGHT, 3)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
-        #Dropout(0.1),                                 # drop 10% feature maps
+       #Dropout(0.1),
 
-        # ── Block 2 ──────────────────────────────────────────
         Conv2D(64, (3, 3), activation='relu', padding='same',
                kernel_regularizer=l2(1e-4)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
-        #Dropout(0.2),                                 # drop 20% feature maps
+       # Dropout(0.2),
 
-        # ── Block 3 ──────────────────────────────────────────
         Conv2D(128, (3, 3), activation='relu', padding='same',
                kernel_regularizer=l2(1e-4)),
         BatchNormalization(),
         MaxPooling2D(2, 2),
-        #Dropout(0.3),                                 # drop 30% feature maps
+       # Dropout(0.3),
 
-        # ── Classifier head ───────────────────────────────────
         Flatten(),
-        #Dropout(0.4),                                 # original dropout kept
-        Dense(512, activation='relu',
-              kernel_regularizer=l2(1e-4)),           # L2 on dense layer
-        Dropout(0.3),                                 # NEW: dropout after Dense
-        Dense(num_classes, activation='softmax')      # no dropout on output layer
+       # Dropout(0.4),
+        Dense(512, activation='relu', kernel_regularizer=l2(1e-4)),
+        Dropout(0.3),
+        Dense(num_classes, activation='softmax')
     ])
 
     model.compile(
@@ -179,11 +163,11 @@ def get_callbacks():
 
 
 # ================================================================
-# SECTION 5 — TRAIN AT 3 EPOCH SETTINGS (300, 50, 70)
+# SECTION 5 — TRAIN
 # ================================================================
 
 print("=" * 55)
-print("  TRAINING EXPERIMENT: 30 vs 50 vs 70 epochs")
+print("  TRAINING — max_epochs = 300  (early-stopping active)")
 print("=" * 55)
 
 histories       = {}
@@ -208,12 +192,10 @@ for MAX_EPOCHS in EPOCH_VARIANTS:
     print(f"    Best val_accuracy: {results_summary[MAX_EPOCHS]['val_accuracy']:.4f}  "
           f"(stopped at epoch {results_summary[MAX_EPOCHS]['actual_epochs']})")
 
-# Pick best model
 best_setting = max(results_summary, key=lambda k: results_summary[k]['val_accuracy'])
 print(f"\n>>> Best setting: max_epochs={best_setting}  "
       f"acc={results_summary[best_setting]['val_accuracy']:.4f}")
 
-# Re-train final model with best setting
 print(f"\n>>> Re-training final model with max_epochs={best_setting} ...")
 model = build_model(NUM_CLASSES)
 final_history = model.fit(
@@ -224,9 +206,17 @@ final_history = model.fit(
     verbose         = 1
 )
 
+# Warm up model so symbolic tensors are defined (needed for Grad-CAM)
+_ = model.predict(np.zeros((1, IMG_WIDTH, IMG_HEIGHT, 3)), verbose=0)
+
+# Print all layer names so you always know what's available
+print("\n--- Model Layer Names ---")
+for i, layer in enumerate(model.layers):
+    print(f"  [{i:2d}] {layer.name:40s}  type: {type(layer).__name__}")
+
 
 # ================================================================
-# SECTION 6 — GRAPH 1+2: Training accuracy & loss curves
+# SECTION 6 — GRAPH 1+2: Training curves
 # ================================================================
 
 print("\n--- Saving Graph 1+2: Training Curves ---")
@@ -253,72 +243,49 @@ print("Saved: 01_training_curves.png")
 
 
 # ================================================================
-# SECTION 7 — GRAPH 3: Epoch comparison (answers teacher's question)
+# SECTION 7 — GRAPH 2: Training summary (single run)
 # ================================================================
 
-print("\n--- Saving Graph 3: Epoch Comparison ---")
+print("\n--- Saving Graph 2: Training Summary ---")
 
-labels     = [str(e) for e in EPOCH_VARIANTS]
-val_accs   = [results_summary[e]['val_accuracy']   for e in EPOCH_VARIANTS]
-val_losses = [results_summary[e]['val_loss']        for e in EPOCH_VARIANTS]
-actual_ep  = [results_summary[e]['actual_epochs']   for e in EPOCH_VARIANTS]
-colors     = ['#5B8DB8', '#E07B54', '#4CAF50']
-
-fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+r = results_summary[300]
+fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 fig.suptitle(
-    'Effect of Epoch Budget on Model Performance\n'
-    '(Early-stopping finds true optimal point automatically)',
+    'Training Summary — 300-epoch Budget\n'
+    '(Early-stopping finds the true optimal point automatically)',
     fontsize=13, fontweight='bold'
 )
 
-# Val accuracy
-bars = axes[0].bar(labels, val_accs, color=colors, edgecolor='black', linewidth=0.6)
-axes[0].set_title('Validation Accuracy')
+axes[0].bar(['300'], [r['val_accuracy']], color='#5B8DB8', edgecolor='black', linewidth=0.6)
+axes[0].set_title('Best Validation Accuracy')
 axes[0].set_xlabel('Max Epoch Budget'); axes[0].set_ylabel('Accuracy')
 axes[0].set_ylim([0, 1.1])
-for bar, v in zip(bars, val_accs):
-    axes[0].text(bar.get_x() + bar.get_width()/2, v + 0.01,
-                 f'{v:.3f}', ha='center', fontweight='bold')
+axes[0].text(0, r['val_accuracy'] + 0.02, f"{r['val_accuracy']:.3f}",
+             ha='center', fontweight='bold')
 
-# Val loss
-bars2 = axes[1].bar(labels, val_losses, color=colors, edgecolor='black', linewidth=0.6)
-axes[1].set_title('Validation Loss')
-axes[1].set_xlabel('Max Epoch Budget'); axes[1].set_ylabel('Loss')
-for bar, v in zip(bars2, val_losses):
-    axes[1].text(bar.get_x() + bar.get_width()/2, v + 0.005,
-                 f'{v:.3f}', ha='center', fontweight='bold')
-
-# Actual epochs run
-bars3 = axes[2].bar(labels, actual_ep, color=colors, edgecolor='black', linewidth=0.6)
-axes[2].set_title('Actual Epochs Run\n(early-stopping effect)')
-axes[2].set_xlabel('Max Epoch Budget'); axes[2].set_ylabel('Epochs run')
-for bar, v in zip(bars3, actual_ep):
-    axes[2].text(bar.get_x() + bar.get_width()/2, v + 1,
-                 str(v), ha='center', fontweight='bold')
+axes[1].bar(['300'], [r['actual_epochs']], color='#4CAF50', edgecolor='black', linewidth=0.6)
+axes[1].set_title('Actual Epochs Run\n(early-stopping effect)')
+axes[1].set_xlabel('Max Epoch Budget'); axes[1].set_ylabel('Epochs run')
+axes[1].text(0, r['actual_epochs'] + 1, str(r['actual_epochs']),
+             ha='center', fontweight='bold')
 
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_DIR, '02_epoch_comparison.png'), dpi=150, bbox_inches='tight')
+plt.savefig(os.path.join(OUTPUT_DIR, '02_training_summary.png'), dpi=150, bbox_inches='tight')
 plt.show()
-print("Saved: 02_epoch_comparison.png")
+print("Saved: 02_training_summary.png")
 
-# Print summary table
 print("\n" + "=" * 60)
-print("   EPOCH EXPERIMENT SUMMARY")
+print("   TRAINING SUMMARY")
 print("=" * 60)
-print(f"{'Max Epochs':>12} | {'Actual Ran':>10} | {'Val Accuracy':>12} | {'Val Loss':>10}")
-print("-" * 60)
-for e in EPOCH_VARIANTS:
-    r   = results_summary[e]
-    star = " <- BEST" if e == best_setting else ""
-    print(f"{e:>12} | {r['actual_epochs']:>10} | "
-          f"{r['val_accuracy']:>12.4f} | {r['val_loss']:>10.4f}{star}")
+print(f"  Max Epoch Budget : 300")
+print(f"  Actual Epochs Run: {r['actual_epochs']}")
+print(f"  Best Val Accuracy: {r['val_accuracy']:.4f}")
+print(f"  Best Val Loss    : {r['val_loss']:.4f}")
 print("=" * 60)
-print("\nConclusion: Higher max-epoch budget lets early-stopping find")
-print("the true optimal point. Setting 100 may stop too early.")
 
 
 # ================================================================
-# SECTION 8 — EVALUATION GRAPHS (confusion matrix, ROC, etc.)
+# SECTION 8 — EVALUATION GRAPHS
 # ================================================================
 
 print("\n--- Running Evaluation ---")
@@ -328,15 +295,11 @@ y_pred_probs   = model.predict(validation_generator, verbose=1)
 y_pred_classes = np.argmax(y_pred_probs, axis=1)
 y_true         = validation_generator.classes
 
-
-# ── GRAPH 4: Confusion Matrix ──────────────────────────────────
-print("\n--- Saving Graph 4: Confusion Matrix ---")
 cm = confusion_matrix(y_true, y_pred_classes)
 
 plt.figure(figsize=(9, 7))
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-            xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES,
-            linewidths=0.5)
+            xticklabels=CLASS_NAMES, yticklabels=CLASS_NAMES, linewidths=0.5)
 plt.title('Confusion Matrix', fontsize=14, fontweight='bold')
 plt.ylabel('True Label'); plt.xlabel('Predicted Label')
 plt.tight_layout()
@@ -344,24 +307,17 @@ plt.savefig(os.path.join(OUTPUT_DIR, '03_confusion_matrix.png'), dpi=150, bbox_i
 plt.show()
 print("Saved: 03_confusion_matrix.png")
 
-
-# ── Classification Report ──────────────────────────────────────
 report_dict = classification_report(y_true, y_pred_classes,
-                                     target_names=CLASS_NAMES,
-                                     output_dict=True)
+                                     target_names=CLASS_NAMES, output_dict=True)
 df_report = pd.DataFrame(report_dict).transpose()
-print("\n--- Detailed Metrics (Precision, Recall, F1-Score) ---")
+print("\n--- Detailed Metrics ---")
 print(df_report.round(2))
-
-
-# ── GRAPH 5: Precision / F1 / Recall grouped bar ──────────────
-print("\n--- Saving Graph 5: Precision / F1 / Recall ---")
 
 f1_scores = [report_dict[c]['f1-score']  for c in CLASS_NAMES]
 precision  = [report_dict[c]['precision'] for c in CLASS_NAMES]
 recall     = [report_dict[c]['recall']    for c in CLASS_NAMES]
 
-x     = np.arange(len(CLASS_NAMES)); width = 0.25
+x = np.arange(len(CLASS_NAMES)); width = 0.25
 fig, ax = plt.subplots(figsize=(11, 5))
 ax.bar(x - width, precision, width, label='Precision', color='#5B8DB8')
 ax.bar(x,         f1_scores, width, label='F1 Score',  color='#E07B54')
@@ -370,18 +326,10 @@ ax.set_xticks(x); ax.set_xticklabels(CLASS_NAMES, rotation=30, ha='right')
 ax.set_ylim(0, 1.2); ax.set_ylabel('Score')
 ax.set_title('Precision / F1 / Recall per Class', fontsize=13, fontweight='bold')
 ax.legend(); ax.grid(axis='y', alpha=0.3)
-for i, (p, f, r) in enumerate(zip(precision, f1_scores, recall)):
-    ax.text(i - width, p + 0.02, f'{p:.2f}', ha='center', fontsize=7)
-    ax.text(i,         f + 0.02, f'{f:.2f}', ha='center', fontsize=7)
-    ax.text(i + width, r + 0.02, f'{r:.2f}', ha='center', fontsize=7)
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, '04_precision_f1_recall.png'), dpi=150, bbox_inches='tight')
 plt.show()
 print("Saved: 04_precision_f1_recall.png")
-
-
-# ── GRAPH 6: ROC Curves ────────────────────────────────────────
-print("\n--- Saving Graph 6: ROC Curves ---")
 
 y_true_bin = label_binarize(y_true, classes=range(NUM_CLASSES))
 fig, ax    = plt.subplots(figsize=(8, 6))
@@ -398,33 +346,23 @@ plt.savefig(os.path.join(OUTPUT_DIR, '05_roc_curves.png'), dpi=150, bbox_inches=
 plt.show()
 print("Saved: 05_roc_curves.png")
 
-
-# ── GRAPH 7: Confidence distribution ──────────────────────────
-print("\n--- Saving Graph 7: Confidence Distribution ---")
-
 max_confs = np.max(y_pred_probs, axis=1)
 correct   = (y_pred_classes == y_true)
 fig, ax   = plt.subplots(figsize=(8, 4))
 ax.hist(max_confs[correct],  bins=20, alpha=0.7, color='#4CAF50', label='Correct')
 ax.hist(max_confs[~correct], bins=20, alpha=0.7, color='#E07B54', label='Wrong')
 ax.set_xlabel('Prediction Confidence'); ax.set_ylabel('Count')
-ax.set_title('Confidence Distribution: Correct vs Wrong Predictions',
-             fontsize=12, fontweight='bold')
+ax.set_title('Confidence Distribution: Correct vs Wrong Predictions', fontsize=12, fontweight='bold')
 ax.legend(); ax.grid(alpha=0.3)
 plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, '06_confidence_distribution.png'), dpi=150, bbox_inches='tight')
 plt.show()
 print("Saved: 06_confidence_distribution.png")
 
-
-# ── GRAPH 8: Per-class accuracy ────────────────────────────────
-print("\n--- Saving Graph 8: Per-Class Accuracy ---")
-
 per_class_acc = cm.diagonal() / cm.sum(axis=1)
 fig, ax = plt.subplots(figsize=(8, 4))
 bar_colors = ['#4CAF50' if v >= 0.9 else '#E07B54' for v in per_class_acc]
-bars = ax.bar(CLASS_NAMES, per_class_acc, color=bar_colors,
-              edgecolor='black', linewidth=0.5)
+bars = ax.bar(CLASS_NAMES, per_class_acc, color=bar_colors, edgecolor='black', linewidth=0.5)
 ax.axhline(np.mean(per_class_acc), color='navy', linestyle='--',
            linewidth=1.5, label=f'Mean = {np.mean(per_class_acc):.2f}')
 ax.set_ylim(0, 1.15); ax.set_ylabel('Accuracy')
@@ -441,42 +379,88 @@ print("Saved: 07_per_class_accuracy.png")
 
 
 # ================================================================
-# SECTION 9 — GRAD-CAM FUNCTIONS
+# SECTION 9 — GRAD-CAM FUNCTIONS  (FIXED for Keras 3)
 # ================================================================
 
+def get_last_conv_layer_name(model):
+    """
+    Auto-detects the last Conv2D layer name.
+    NEVER hardcode 'conv2d_2' — it changes every time you retrain.
+    """
+    last_conv_name = None
+    for layer in model.layers:
+        if isinstance(layer, tf.keras.layers.Conv2D):
+            last_conv_name = layer.name
+    if last_conv_name is None:
+        raise ValueError("No Conv2D layer found in model.")
+    print(f"[Grad-CAM] Auto-detected last Conv2D layer: '{last_conv_name}'")
+    return last_conv_name
+
+
 def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
-    grad_model = tf.keras.models.Model(
-        inputs  = model.inputs,
-        outputs = [model.get_layer(last_conv_layer_name).output,
-                   model.output]
-    )
+    """
+    Keras 3 compatible Grad-CAM.
+
+    Instead of building a sub-Model from model.inputs / model.outputs
+    (which fails on Sequential models that haven't been traced as a
+    functional graph), we do a manual layer-by-layer forward pass
+    inside GradientTape, watching the conv output directly.
+    """
+    img_tensor = tf.cast(img_array, tf.float32)
+
     with tf.GradientTape() as tape:
-        conv_outputs, preds = grad_model(img_array)
+        x        = img_tensor
+        conv_out = None
+
+        # Walk every layer; record output of the target conv layer
+        for layer in model.layers:
+            x = layer(x, training=False)
+            if layer.name == last_conv_layer_name:
+                conv_out = x
+                tape.watch(conv_out)   # ← watch the conv tensor, not the input
+
+        preds = x   # final softmax output
+
         if pred_index is None:
-            pred_index = tf.argmax(preds[0])
+            pred_index = int(tf.argmax(preds[0]))
         class_channel = preds[:, pred_index]
 
-    grads        = tape.gradient(class_channel, conv_outputs)
+    grads        = tape.gradient(class_channel, conv_out)
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    heatmap      = conv_outputs[0] @ pooled_grads[..., tf.newaxis]
+    heatmap      = conv_out[0] @ pooled_grads[..., tf.newaxis]
     heatmap      = tf.squeeze(heatmap)
-    heatmap      = tf.maximum(heatmap, 0) / (tf.math.reduce_max(heatmap) + 1e-8)
+    heatmap      = tf.maximum(heatmap, 0)   # ReLU
+
+    max_val = tf.math.reduce_max(heatmap)
+    if max_val == 0:
+        return np.zeros(heatmap.shape)      # blank if no activation
+    heatmap = heatmap / max_val             # normalize 0 → 1
     return heatmap.numpy()
 
 
 def get_img_and_heatmap(img_display, img_array, model, last_conv_layer_name):
+    """
+    Returns: (superimposed PIL image, predicted class index, confidence)
+    img_display : original numpy uint8  (H × W × 3)
+    img_array   : preprocessed float32  (1 × 128 × 128 × 3)
+    """
     preds      = model.predict(img_array, verbose=0)
-    pred_index = np.argmax(preds[0])
+    pred_index = int(np.argmax(preds[0]))
     confidence = float(np.max(preds[0]))
 
-    heatmap       = make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index)
-    heatmap_uint8 = np.uint8(255 * heatmap)
-    jet           = plt.cm.jet(np.arange(256))[:, :3]
-    jet_heatmap   = jet[heatmap_uint8]
-    jet_heatmap   = Image.fromarray(np.uint8(jet_heatmap * 255)).resize(
-                        (img_display.shape[1], img_display.shape[0]))
-    jet_heatmap   = np.array(jet_heatmap).astype(float)
+    heatmap = make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index)
 
+    # Colorize heatmap with jet colormap
+    heatmap_uint8 = np.uint8(255 * heatmap)
+    jet           = plt.cm.jet(np.arange(256))[:, :3]       # (256, 3) float 0-1
+    jet_heatmap   = jet[heatmap_uint8]                       # (H', W', 3)
+    jet_heatmap   = Image.fromarray(np.uint8(jet_heatmap * 255)).resize(
+                        (img_display.shape[1], img_display.shape[0]),  # (W, H)
+                        Image.BILINEAR
+                    )
+    jet_heatmap = np.array(jet_heatmap).astype(float)
+
+    # Blend: 40% heatmap + 60% original
     orig_float   = img_display.astype(float)
     superimposed = np.clip(jet_heatmap * 0.4 + orig_float * 0.6, 0, 255).astype(np.uint8)
     return Image.fromarray(superimposed), pred_index, confidence
@@ -487,11 +471,13 @@ def get_img_and_heatmap(img_display, img_array, model, last_conv_layer_name):
 # ================================================================
 
 def predict_image_with_gradcam(model, img_width, img_height, class_names):
-    LAST_CONV_LAYER = 'conv2d_2'
+
+    # ── Auto-detect last conv layer — never hardcode ──────────
+    LAST_CONV_LAYER = get_last_conv_layer_name(model)
 
     print("\n--- Grad-CAM Prediction ---")
     print("Enter the full path to a steel surface image on your PC.")
-    print("Example: C:/Users/YourName/Pictures/steel_sample.jpg")
+    print("Example: /Users/yourname/Desktop/steel_sample.jpg")
     test_image_path = input("\nImage path: ").strip().strip('"')
 
     if not os.path.exists(test_image_path):
@@ -500,35 +486,42 @@ def predict_image_with_gradcam(model, img_width, img_height, class_names):
 
     fn          = os.path.basename(test_image_path)
     img         = Image.open(test_image_path).convert('RGB')
-    img_display = np.array(img)
+    img_display = np.array(img)                              # original size, uint8
     img_resized = img.resize((img_width, img_height))
     img_array   = np.expand_dims(
                       np.array(img_resized) / 255.0, axis=0
                   ).astype(np.float32)
+
+    print(f"Image loaded   : {img_display.shape}")
+    print(f"Model input    : {img_array.shape}")
+    print(f"Grad-CAM layer : {LAST_CONV_LAYER}")
 
     gradcam_img, pred_index, confidence = get_img_and_heatmap(
         img_display, img_array, model, LAST_CONV_LAYER
     )
     predicted_label = class_names[pred_index]
 
-    # Side-by-side original + heatmap
+    # ── Side-by-side: original + heatmap ──────────────────────
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     axes[0].imshow(img_display)
-    axes[0].set_title(f'Original: {fn}'); axes[0].axis('off')
+    axes[0].set_title(f'Original Image: {fn}', fontsize=11)
+    axes[0].axis('off')
     axes[1].imshow(gradcam_img)
-    axes[1].set_title(f'Grad-CAM: {predicted_label} ({confidence*100:.2f}%)')
+    axes[1].set_title(f'Grad-CAM: {predicted_label} ({confidence*100:.2f}%)', fontsize=11)
     axes[1].axis('off')
+    plt.suptitle('Red/Yellow areas = where the model detected the defect',
+                 fontsize=9, color='gray')
     plt.tight_layout()
     out_path = os.path.join(OUTPUT_DIR, f'gradcam_{fn}')
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.show()
-    print(f"Saved: gradcam_{fn}")
+    print(f"Saved: {out_path}")
 
-    # Top-3 confidence bar chart
-    preds     = model.predict(img_array, verbose=0)[0]
-    top3_idx  = np.argsort(preds)[::-1][:3]
+    # ── Top-3 confidence bar chart ─────────────────────────────
+    all_preds = model.predict(img_array, verbose=0)[0]
+    top3_idx  = np.argsort(all_preds)[::-1][:3]
     top3_lbls = [class_names[i] for i in top3_idx]
-    top3_vals = [preds[i] * 100  for i in top3_idx]
+    top3_vals = [all_preds[i] * 100 for i in top3_idx]
 
     fig, ax = plt.subplots(figsize=(6, 3))
     bar_colors = ['#4CAF50' if i == 0 else '#9E9E9E' for i in range(3)]
@@ -537,18 +530,19 @@ def predict_image_with_gradcam(model, img_width, img_height, class_names):
         ax.text(v + 0.5, bar.get_y() + bar.get_height()/2,
                 f'{v:.1f}%', va='center', fontsize=10)
     ax.set_xlim(0, 115); ax.set_xlabel('Confidence (%)')
-    ax.set_title(f'Top-3 Predictions', fontweight='bold')
+    ax.set_title('Top-3 Predictions', fontweight='bold')
     ax.grid(axis='x', alpha=0.3)
     plt.tight_layout()
     out_path2 = os.path.join(OUTPUT_DIR, f'top3_{fn}')
     plt.savefig(out_path2, dpi=150, bbox_inches='tight')
     plt.show()
-    print(f"Saved: top3_{fn}")
+    print(f"Saved: {out_path2}")
 
     print(f"\n--- Prediction Result (Grad-CAM Analysis) ---")
     print(f"Model Prediction : {predicted_label}")
     print(f"Confidence       : {confidence*100:.2f}%")
-    print("Red/yellow areas in the heatmap show where the defect was detected.")
+    print(f"Grad-CAM layer   : {LAST_CONV_LAYER}")
+    print("Red/yellow areas in the heatmap = where the model detected the defect.")
 
 
 # Run prediction
